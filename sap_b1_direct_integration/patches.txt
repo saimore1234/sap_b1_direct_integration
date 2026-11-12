@@ -1,0 +1,1 @@
+sap_b1_direct_integration.patches.v1_0.add_unique_sap_reference
