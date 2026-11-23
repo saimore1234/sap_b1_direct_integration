@@ -421,10 +421,11 @@ class SecurityTests(Base):
             api.cancel_e_invoice({**req(), "reason": "Duplicate"})
 
     def test_multiple_sap_company_configurations_are_independent(self):
-        p2 = profile(iid="IT2", db="DB_TWO", gstin=with_checksum("29AAACX0000A1Z"))
+        p2 = profile(iid="IT2", db="DB_TWO", gstin=with_checksum("24AAACX0000A1Z"))
         api = self.make_api(profiles=Profiles(profile(), p2))
         a = api.generate_e_invoice(req())
-        inv2 = make_invoice(integration_id="IT2", sap_database="DB_TWO"); inv2["seller"].update({"gstin": with_checksum("29AAACX0000A1Z"), "state_code": "29", "pincode": "560001"})
+        # second company in another state, still an inter-state supply to the (Karnataka) buyer: IGST stays valid
+        inv2 = make_invoice(integration_id="IT2", sap_database="DB_TWO"); inv2["seller"].update({"gstin": with_checksum("24AAACX0000A1Z"), "state_code": "24", "pincode": "382427"})
         b = api.generate_e_invoice(req(inv2))
         self.assertTrue(a["ok"] and b["ok"], (a, b))
         self.assertNotEqual(a["reference"], b["reference"])

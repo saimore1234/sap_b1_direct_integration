@@ -145,9 +145,9 @@ def validate_invoice(inv: Invoice, *, sandbox: bool, today: Optional[date] = Non
         if it.cgst_rate or it.sgst_rate:
             inter_state = False if inter_state is None else inter_state and False
     if inter_state is True and not export and inv.seller.state_code and inv.buyer.state_code and inv.seller.state_code == (inv.place_of_supply or inv.buyer.state_code):
-        f.warn("IGST_SAME_STATE", "items", "IGST is charged although the seller state equals the place of supply")
+        f.error("IGST_SAME_STATE", "items", "IGST is charged although the seller state equals the place of supply. For an intra-state supply only CGST and SGST apply; the IRP rejects this invoice. Correct the tax code or the place of supply in SAP.")
     if inter_state is False and not export and inv.seller.state_code and (inv.place_of_supply or inv.buyer.state_code) != inv.seller.state_code:
-        f.warn("CGST_OTHER_STATE", "items", "CGST/SGST is charged although the place of supply is in another state")
+        f.error("CGST_OTHER_STATE", "items", "CGST/SGST is charged although the place of supply (" + str(inv.place_of_supply or inv.buyer.state_code) + ") is in another state than the seller (" + str(inv.seller.state_code) + "). For an inter-state supply only IGST applies; the IRP rejects this invoice (error 2174). Correct the tax code or the place of supply in SAP.")
 
     _totals(f, inv, tolerance)
     return f
