@@ -167,8 +167,10 @@ def build_ewb_standalone(inv: Invoice) -> Dict[str, Any]:
         "fromTrdName": s.legal_name, "fromGstin": s.gstin, "fromAddr1": ship_from.address1, "fromAddr2": ship_from.address2, "fromPlace": ship_from.city,
         "fromPincode": int(ship_from.pincode or 0), "fromStateCode": int(s.state_code), "actFromStateCode": int(ship_from.state_code or s.state_code),
         "toTrdName": b.legal_name, "toGstin": "URP" if (export or not b.gstin) else b.gstin, "toAddr1": ship_to.address1, "toAddr2": ship_to.address2, "toPlace": ship_to.city,
-        "toPincode": 999999 if export else int(ship_to.pincode or 0), "toStateCode": C.EWB_OTHER_COUNTRY_STATE_CODE if export else int(pos or 0),
-        "actToStateCode": C.EWB_OTHER_COUNTRY_STATE_CODE if export else int(ship_to.state_code or pos or 0),
+        # Export: the bill-to state stays "other country" (99); the e-Way Bill covers the movement INSIDE India, so the actual ship-to is the delivery point
+        # (port / airport / warehouse) with its own Indian PIN code and state. These come from the Ship To of the SAP E-Way Bill details, never invented.
+        "toPincode": int(ship_to.pincode or 0), "toStateCode": C.EWB_OTHER_COUNTRY_STATE_CODE if export else int(pos or 0),
+        "actToStateCode": int(ship_to.state_code or 0) if export else int(ship_to.state_code or pos or 0),
         "totalValue": q2(t.taxable_value), "cgstValue": q2(t.cgst), "sgstValue": q2(t.sgst), "igstValue": q2(t.igst), "cessValue": q2(t.cess), "cessNonAdvolValue": 0,
         "otherValue": q2(t.round_off + t.other_charges - t.discount), "totInvValue": q2(t.invoice_total),
         "transMode": v["mode"], "transDistance": v["distance"], "transporterName": tr.transporter_name, "transporterId": tr.transporter_id,

@@ -438,6 +438,10 @@ class GstApi:
 
         f = V.validate_invoice(inv, sandbox=sandbox, min_hsn_digits=profile.min_hsn_digits, tolerance=profile.rounding_tolerance, for_einvoice=False)
         f.items.extend(V.validate_transport(inv.transport).items)
+        if inv.supply_type in C.EXPORT_SUPPLY_TYPES:
+            st = inv.ship_to
+            if not st or not (st.pincode or "").isdigit() or len(st.pincode) != 6 or not (st.state_code or "").isdigit() or st.state_code in ("96", "97", "99") or st.pincode == "999999":
+                f.error("EXPORT_SHIP_TO", "ship_to", "For an export the e-Way Bill covers the movement inside India: enter the delivery point (port / airport / warehouse in India: place, 6-digit PIN code and state) as the Ship To in the E-Way Bill details of the SAP invoice.")
         if not f.ok:
             return self._env(rid, False, C.ST_VALIDATION_FAILED, ref, findings=f, message="Validation failed. Nothing was sent to the e-Way Bill system.")
         subs = N.apply_sandbox_identities(inv) if sandbox else []

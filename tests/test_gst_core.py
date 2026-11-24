@@ -107,16 +107,31 @@ class ValidationTests(Base):
         inv["currency"] = "EUR"; inv["supply_type"] = "B2B"
         self.assertIn("CURRENCY", [e["code"] for e in self.api.validate_invoice(req(inv))["errors"]])
 
-    def test_export_ewb_uses_the_ewb_other_country_state_code_not_the_einvoice_one(self):
+    def _export_invoice(self, ship_to=None):
         inv = make_invoice(supply_type="EXPWOP", currency="USD", exchange_rate=83)
         inv["buyer"] = {"gstin": "URP", "legal_name": "GINEBRA SAN MIGUEL", "address": "1555 City of Mandaluyong", "city": "City of Mandaluyong NCR", "state_code": "96", "pincode": ""}
         inv["place_of_supply"] = "96"
+        inv["export"] = {"country_code": "PH", "port_code": "INBOM1", "foreign_currency": "USD"}
         inv["items"][0].update({"igst_rate": 0, "igst_amount": 0}); inv["tax_totals"].update({"igst": 0, "invoice_total": 50000})
-        p = N.build_ewb_standalone(parse_invoice(inv))
-        self.assertEqual(p["toStateCode"], 99); self.assertEqual(p["actToStateCode"], 99); self.assertEqual(p["toGstin"], "URP"); self.assertEqual(p["toPincode"], 999999)
-        self.assertEqual(p["subSupplyType"], 3); self.assertEqual(p["fromStateCode"], 27)           # the supplier keeps its own Indian state
+        if ship_to is not None:
+            inv["ship_to"] = ship_to
+        return inv
+
+    PORT = {"gstin": "URP", "legal_name": "GINEBRA SAN MIGUEL", "address": "JNPT Port", "city": "Navi Mumbai", "state_code": "27", "pincode": "400707"}
+
+    def test_export_ewb_goes_to_the_indian_delivery_point_with_the_other_country_bill_to_state(self):
+        p = N.build_ewb_standalone(parse_invoice(self._export_invoice(self.PORT)))
+        self.assertEqual(p["toStateCode"], 99); self.assertEqual(p["actToStateCode"], 27); self.assertEqual(p["toPincode"], 400707); self.assertEqual(p["toPlace"], "Navi Mumbai")
+        self.assertEqual(p["toGstin"], "URP"); self.assertEqual(p["subSupplyType"], 3); self.assertEqual(p["fromStateCode"], 27); self.assertEqual(p["transactionType"], 2)
         d = N.build_ewb_standalone(parse_invoice(make_invoice()))
         self.assertEqual(d["toStateCode"], 29); self.assertEqual(d["actToStateCode"], 29)           # a domestic consignee is unchanged
+
+    def test_export_ewb_without_an_indian_ship_to_is_rejected_before_any_call(self):
+        for st in (None, {**self.PORT, "pincode": "999999"}, {**self.PORT, "state_code": "96"}, {**self.PORT, "state_code": "99"}):
+            r = self.api.generate_e_waybill(req(self._export_invoice(st)))
+            self.assertFalse(r["ok"]); self.assertIn("EXPORT_SHIP_TO", [e["code"] for e in r["errors"]], st)
+        self.assertEqual(self.calls, [])
+        self.assertTrue(self.api.generate_e_waybill(req(self._export_invoice(self.PORT)))["ok"])
 
     def test_multiple_lines_cgst_sgst_cess_and_credit_note(self):
         inv = make_invoice(igst=False, document_type="CRN", original_document_number="INV/OLD/1", original_document_date="2026-10-01")
