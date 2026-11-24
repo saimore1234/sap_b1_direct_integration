@@ -22,6 +22,9 @@ UQC = {
 DOCUMENT_TYPES = {"INV", "CRN", "DBN"}
 SUPPLY_TYPES = {"B2B", "SEZWP", "SEZWOP", "EXPWP", "EXPWOP", "DEXP"}
 EXPORT_SUPPLY_TYPES = {"EXPWP", "EXPWOP"}
+# The e-Way Bill system has its own "other country" state code (99), different from the e-Invoice/GST code 96. Evidence: SAP B1 itself stores ToState = 99
+# (table INV26) for an export consignee; sending 96 is rejected as "Invalid or Blank Consignee Ship-to State Code".
+EWB_OTHER_COUNTRY_STATE_CODE = 99
 SEZ_SUPPLY_TYPES = {"SEZWP", "SEZWOP"}
 
 # Rates that are normally valid; anything else is reported as a warning (the IRP master decides).

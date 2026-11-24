@@ -107,6 +107,17 @@ class ValidationTests(Base):
         inv["currency"] = "EUR"; inv["supply_type"] = "B2B"
         self.assertIn("CURRENCY", [e["code"] for e in self.api.validate_invoice(req(inv))["errors"]])
 
+    def test_export_ewb_uses_the_ewb_other_country_state_code_not_the_einvoice_one(self):
+        inv = make_invoice(supply_type="EXPWOP", currency="USD", exchange_rate=83)
+        inv["buyer"] = {"gstin": "URP", "legal_name": "GINEBRA SAN MIGUEL", "address": "1555 City of Mandaluyong", "city": "City of Mandaluyong NCR", "state_code": "96", "pincode": ""}
+        inv["place_of_supply"] = "96"
+        inv["items"][0].update({"igst_rate": 0, "igst_amount": 0}); inv["tax_totals"].update({"igst": 0, "invoice_total": 50000})
+        p = N.build_ewb_standalone(parse_invoice(inv))
+        self.assertEqual(p["toStateCode"], 99); self.assertEqual(p["actToStateCode"], 99); self.assertEqual(p["toGstin"], "URP"); self.assertEqual(p["toPincode"], 999999)
+        self.assertEqual(p["subSupplyType"], 3); self.assertEqual(p["fromStateCode"], 27)           # the supplier keeps its own Indian state
+        d = N.build_ewb_standalone(parse_invoice(make_invoice()))
+        self.assertEqual(d["toStateCode"], 29); self.assertEqual(d["actToStateCode"], 29)           # a domestic consignee is unchanged
+
     def test_multiple_lines_cgst_sgst_cess_and_credit_note(self):
         inv = make_invoice(igst=False, document_type="CRN", original_document_number="INV/OLD/1", original_document_date="2026-10-01")
         inv["items"].append({"line": 2, "item_code": "I2", "description": "Cap", "hsn_code": "39235090", "quantity": 10, "unit": "NOS", "unit_price": 100, "taxable_value": 1000,
@@ -338,6 +349,36 @@ class EWayBillTests(Base):
         r = self.api.generate_e_waybill(req())
         self.assertEqual(r["status"], "Failed"); self.assertIn("generate it again", r["message"])
         self.assertTrue(self.api.generate_e_waybill(req())["ok"])
+
+    def test_invalid_transporter_gstin_and_pincode_are_rejected_before_any_call(self):
+        inv = make_invoice(); inv["transport"] = {"vehicle_number": "MH04AB1234", "transporter_id": "NOTAGSTIN", "transport_mode": "Road", "distance": 10}
+        r = self.api.generate_e_waybill(req(inv))
+        self.assertIn("TRANSPORTER_ID", [e["code"] for e in r["errors"]])
+        inv = make_invoice(); inv["buyer"]["pincode"] = "12"
+        r = self.api.generate_e_waybill(req(inv))
+        self.assertFalse(r["ok"]); self.assertEqual(r["status"], C.ST_VALIDATION_FAILED)
+        self.assertEqual(self.calls, [])
+
+    def test_portal_rejection_shows_the_portal_message_and_can_be_retried(self):
+        self.gsp.behaviour["ewb_reject"] = "Vehicle number is invalid for the state"
+        r = self.api.generate_e_waybill(req())
+        self.assertFalse(r["ok"]); self.assertEqual(r["status"], C.ST_FAILED); self.assertIn("Vehicle number is invalid", r["message"]); self.assertEqual(r["data"]["error_code"], "604")
+        self.assertEqual(self.store.get(r["reference"])["processing_status"], C.ST_FAILED)
+        self.gsp.behaviour.clear()
+        again = self.api.generate_e_waybill(req())
+        self.assertTrue(again["ok"], again); self.assertTrue(again["data"]["ewb_no"])
+        self.assertEqual(self.calls, ["generate_ewb", "generate_ewb"])
+
+    def test_a_response_without_an_ewb_number_is_never_reported_as_success(self):
+        orig = self.gsp.generate_ewb
+        self.gsp.generate_ewb = lambda payload, with_irn: {"ewb_no": None, "ewb_date": None, "ewb_valid": None}
+        r = self.api.generate_e_waybill(req())
+        self.assertFalse(r["ok"]); self.assertEqual(self.store.get(r["reference"])["error_code"], "NO_EWB")
+        self.gsp.generate_ewb = orig
+
+    def test_logs_never_contain_credentials_for_ewb(self):
+        self.api.generate_e_waybill(req())
+        self.assertNotIn("secret", repr(self.logs).lower())
 
     def test_update_vehicle_and_transporter(self):
         self.api.generate_e_waybill(req()); self.calls.clear()
