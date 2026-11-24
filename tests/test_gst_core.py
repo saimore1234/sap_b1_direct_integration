@@ -395,6 +395,14 @@ class EWayBillTests(Base):
         self.api.generate_e_waybill(req())
         self.assertNotIn("secret", repr(self.logs).lower())
 
+    def test_portal_day_first_dates_are_normalised_in_the_generate_answer(self):
+        from sap_b1_direct_integration.core import service as S
+        for raw, want in (("24/11/2026 11:50:00 AM", "2026-11-24 11:50:00"), ("25/11/2026 11:59:00 PM", "2026-11-25 23:59:00"), ("24-11-2026 11:50:00 AM", "2026-11-24 11:50:00"), ("25/11/2026", "2026-11-25 00:00:00")):
+            self.assertEqual(S._fmt_dt(S._parse_dt(raw)), want, raw)
+        self.gsp.generate_ewb = lambda payload, with_irn: {"ewb_no": "652224268025", "ewb_date": "24/11/2026 11:50:00 AM", "ewb_valid": "25/11/2026 11:59:00 PM"}
+        r = self.api.generate_e_waybill(req())
+        self.assertTrue(r["ok"], r); self.assertEqual(r["data"]["ewb_date"], "2026-11-24 11:50:00"); self.assertEqual(r["data"]["ewb_valid_till"], "2026-11-25 23:59:00")
+
     def test_update_vehicle_and_transporter(self):
         self.api.generate_e_waybill(req()); self.calls.clear()
         v = self.api.update_vehicle({**req(), "vehicle_number": "MH12CD5678", "reason": "Due to Break Down", "remark": "tyre", "place": "Thane", "state_code": "27"})

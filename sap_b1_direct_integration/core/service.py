@@ -110,12 +110,16 @@ def make_reference(integration_id: str, sap_database: str, object_type: str, doc
     return f"{ref}_{suffix}" if suffix else ref
 
 
+def _fmt_dt(d: Optional[datetime]) -> str:
+    return d.strftime("%Y-%m-%d %H:%M:%S") if d else ""
+
+
 def _parse_dt(s: Any) -> Optional[datetime]:
     if not s:
         return None
     if isinstance(s, datetime):
         return s
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%d/%m/%Y %I:%M:%S %p", "%d/%m/%Y %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%d/%m/%Y"):
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%d/%m/%Y %I:%M:%S %p", "%d/%m/%Y %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%d/%m/%Y %I:%M %p", "%d-%m-%Y %I:%M:%S %p", "%d-%m-%Y %H:%M:%S", "%d/%m/%Y", "%d-%m-%Y"):
         try:
             return datetime.strptime(str(s)[:26].strip(), fmt)
         except ValueError:
@@ -483,7 +487,7 @@ class GstApi:
             self.store.update(ref, processing_status=C.ST_FAILED, error_code="NO_EWB", error_message="The response did not contain an e-Way Bill number.", locked_until=None)
             return self._env(rid, False, C.ST_FAILED, ref, message="The response did not contain an e-Way Bill number.", warnings=subs)
         self.store.update(ref, processing_status=C.ST_GENERATED, ewaybill_number=str(no), ewaybill_date=_parse_dt(res.get("ewb_date")), ewaybill_validity=_parse_dt(res.get("ewb_valid")), locked_until=None, error_code="", error_message="")
-        return self._env(rid, True, C.ST_GENERATED, ref, data={"ewb_no": str(no), "ewb_date": res.get("ewb_date"), "ewb_valid_till": res.get("ewb_valid")}, message="e-Way Bill generated.", warnings=subs)
+        return self._env(rid, True, C.ST_GENERATED, ref, data={"ewb_no": str(no), "ewb_date": _fmt_dt(_parse_dt(res.get("ewb_date"))) or res.get("ewb_date"), "ewb_valid_till": _fmt_dt(_parse_dt(res.get("ewb_valid"))) or res.get("ewb_valid")}, message="e-Way Bill generated.", warnings=subs)
 
     @staticmethod
     def _ewb_data(rec: Dict[str, Any]) -> Dict[str, Any]:
