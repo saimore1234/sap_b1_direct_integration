@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 from . import constants as C
 from .contract import Invoice, Item, Party, ZERO
 
-GSTIN_RX = re.compile(r"^[0-9]{2}[A-Z]{4}[ABCFGHLJPTK][0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
+GSTIN_RX = re.compile(r"^[0-9]{2}[A-Z]{3}[ABCFGHLJPTK][A-Z][0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
 GSTIN_LOOSE_RX = re.compile(r"^[0-9]{2}[A-Z0-9]{10}[0-9A-Z]{3}$")           # sandbox test identities do not follow the checksum rules
 PIN_RX = re.compile(r"^[1-9][0-9]{5}$")
 DOCNO_RX = re.compile(r"^[A-Za-z1-9][A-Za-z0-9/-]{0,15}$")                   # NIC: max 16, no leading 0 / '/' / '-'
