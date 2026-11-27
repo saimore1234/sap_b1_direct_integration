@@ -196,6 +196,21 @@ def build_update_vehicle(ewb_no: str, vehicle_no: str, tr: Transport, reason: st
     })
 
 
+def build_extend_validity(ewb_no: str, tr: Transport, d: Dict[str, Any]) -> Dict[str, Any]:
+    """d: already validated values (place, state_code, pincode, remaining_distance, reason, remark, consignment_status, transit_type, address1..3)."""
+    v = _transport_values(tr)
+    transit = d["consignment_status"] == "In Transit"
+    out = {
+        "ewbNo": int(ewb_no), "vehicleNo": tr.vehicle_number, "fromPlace": d["place"], "fromState": int(d["state_code"]), "fromPincode": int(d["pincode"]),
+        "remainingDistance": int(d["remaining_distance"]), "transDocNo": tr.doc_number, "transDocDate": fmt_date(tr.doc_date),
+        "transMode": "In Transit" if transit else v["mode"], "consignmentStatus": C.CONSIGNMENT_STATUS[d["consignment_status"]],
+        "transitType": C.TRANSIT_TYPES[d["transit_type"]] if transit else "", "extnRsnCode": C.EXTEND_REASONS[d["reason"]], "extnRemarks": d["remark"] or d["reason"],
+    }
+    if transit:
+        out.update({"addressLine1": d["address1"], "addressLine2": d["address2"], "addressLine3": d["address3"]})
+    return sanitize(out)
+
+
 def build_update_transporter(ewb_no: str, transporter_id: str) -> Dict[str, Any]:
     return {"ewbNo": int(ewb_no), "transporterId": transporter_id}
 

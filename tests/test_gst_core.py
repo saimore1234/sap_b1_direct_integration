@@ -570,3 +570,89 @@ class NoAccountingDocumentsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ===================================================================================== Part-A / Part-B, validity extension
+class PartAAndExtensionTests(Base):
+    NO_VEHICLE = {"vehicle_number": "", "transporter_id": TRANSPORTER_GSTIN, "transport_mode": "Road", "distance": 100}
+
+    def _part_a(self):
+        self.gsp.behaviour["part_a"] = True
+        inv = make_invoice(); inv["transport"] = dict(self.NO_VEHICLE)
+        r = self.api.generate_e_waybill(req(inv))
+        self.gsp.behaviour.clear()
+        return r
+
+    def _update(self, **over):
+        body = {**req(), "vehicle_number": "MH12CD5678", "reason": "First Time", "place": "Thane", "state_code": "27"}
+        body.update(over)
+        return self.api.update_vehicle(body)
+
+    def _extend(self, **over):
+        body = {**req(), "reason": "Accident", "place": "Thane", "state_code": "27", "pincode": "400601", "remaining_distance": 40}
+        body.update(over)
+        return self.api.extend_e_waybill_validity(body)
+
+    def _status(self):
+        return self.api.get_e_waybill_status(req())
+
+    def _at_expiry(self, hours_before=1):
+        det = list(FakeGsp.ewb_registry.values())[0]
+        det["ewb_valid"] = (self.clock() + timedelta(hours=hours_before)).strftime("%Y-%m-%d %H:%M:%S")
+
+    def test_transporter_without_vehicle_gives_part_a_not_a_completed_bill(self):
+        r = self._part_a()
+        self.assertTrue(r["ok"], r); self.assertTrue(r["data"]["part_b_pending"]); self.assertIn("Part-B", r["message"])
+        self.assertTrue(self._status()["data"]["part_b_pending"])
+
+    def test_completing_part_b_clears_pending(self):
+        self._part_a()
+        self.assertTrue(self._update()["ok"])
+        s = self._status()["data"]
+        self.assertFalse(s["part_b_pending"]); self.assertEqual(s["vehicle_no"], "MH12CD5678")
+
+    def test_normal_generation_is_not_pending(self):
+        self.assertFalse(self.api.generate_e_waybill(req())["data"]["part_b_pending"])
+
+    def test_rail_part_b_needs_the_transport_document_but_no_vehicle(self):
+        self._part_a()
+        bad = self._update(vehicle_number="", transport_mode="Rail")
+        self.assertEqual([e["code"] for e in bad["errors"]], ["TRANSPORT_DOC"])
+        self.calls.clear()
+        ok = self._update(vehicle_number="", transport_mode="Rail", doc_number="RR123", doc_date=date.today().isoformat())
+        self.assertTrue(ok["ok"], ok); self.assertIn("update_vehicle", self.calls)
+
+    def test_returning_to_an_earlier_vehicle_is_sent_again(self):
+        self.api.generate_e_waybill(req())
+        for veh in ("MH12CD5678", "MH14ZZ1111", "MH12CD5678"):
+            self.assertTrue(self._update(vehicle_number=veh, reason="Others")["ok"])
+        self.assertEqual(self.calls.count("update_vehicle"), 3)
+        self.assertTrue(self._update(reason="Others")["ok"])               # repeating the current one is not sent again
+        self.assertEqual(self.calls.count("update_vehicle"), 3)
+
+    def test_extension_inside_the_window(self):
+        self.api.generate_e_waybill(req()); self._at_expiry()
+        r = self._extend()
+        self.assertTrue(r["ok"], r); self.assertEqual(r["data"]["ewb_valid_till"], "2026-11-12 23:59:00")
+        self.assertEqual(self.gsp.last_extend["extnRsnCode"], 5); self.assertEqual(self.gsp.last_extend["consignmentStatus"], "M")
+        self.assertEqual(self.gsp.last_extend["remainingDistance"], 40)
+
+    def test_extension_outside_the_window_or_without_part_b_is_refused(self):
+        self.api.generate_e_waybill(req()); self._at_expiry(hours_before=30)
+        self.assertEqual([e["code"] for e in self._extend()["errors"]], ["EXTEND_WINDOW"])
+        list(FakeGsp.ewb_registry.values())[0]["ewb_valid"] = ""
+        self.assertEqual([e["code"] for e in self._extend()["errors"]], ["PART_B_PENDING"])
+        self.assertNotIn("extend_validity", self.calls)
+
+    def test_extension_input_is_checked_before_the_call(self):
+        self.api.generate_e_waybill(req()); self._at_expiry()
+        codes = {e["code"] for e in self._extend(reason="x", pincode="1", remaining_distance=0, consignment_status="In Transit")["errors"]}
+        self.assertEqual(codes, {"REASON", "PINCODE", "DISTANCE", "TRANSIT"}); self.assertNotIn("extend_validity", self.calls)
+
+    def test_extension_with_lost_answer(self):
+        self.api.generate_e_waybill(req()); self._at_expiry()
+        self.gsp.behaviour["timeout_before"] = True
+        self.assertEqual(self._extend()["status"], C.ST_UNKNOWN)
+        self.gsp.behaviour.clear(); self.gsp.behaviour["timeout_after"] = True
+        r = self._extend()
+        self.assertTrue(r["ok"], r)

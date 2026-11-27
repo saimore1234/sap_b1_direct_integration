@@ -169,7 +169,7 @@ class FakeGsp(Gsp):
         rec = FakeGsp.ewb_registry.get(doc_no)
         if rec is None:
             n = len(FakeGsp.ewb_registry) + 1
-            rec = {"ewb_no": str(341000000000 + n), "ewb_date": "2026-11-09 11:00:00", "ewb_valid": "2026-11-10 23:59:00", "status": "ACT", "vehicle_no": payload.get("vehicleNo") or payload.get("VehNo"), "docNo": doc_no}
+            rec = {"ewb_no": str(341000000000 + n), "ewb_date": "2026-11-09 11:00:00", "ewb_valid": "" if b.get("part_a") else "2026-11-10 23:59:00", "status": "ACT", "vehicle_no": payload.get("vehicleNo") or payload.get("VehNo"), "docNo": doc_no}
             FakeGsp.ewb_registry[doc_no] = rec
         if b.get("timeout_after"):
             raise GspUncertain("timeout (answer lost)")
@@ -204,10 +204,23 @@ class FakeGsp(Gsp):
             raise GspUncertain("timeout")
         for rec in FakeGsp.ewb_registry.values():
             if str(rec["ewb_no"]) == str(payload["ewbNo"]):
-                rec["vehicle_no"] = payload["vehicleNo"]
+                rec["vehicle_no"] = payload.get("vehicleNo", "")
+                rec["ewb_valid"] = rec["ewb_valid"] or "2026-11-11 23:59:00"
         if self.behaviour.get("timeout_after"):
             raise GspUncertain("timeout (answer lost)")
         return {"ewb_valid": "2026-11-11 23:59:00", "updated": "2026-11-09 12:00:00"}
+
+    def extend_validity(self, payload):
+        self.calls.append("extend_validity")
+        self.last_extend = payload
+        if self.behaviour.get("timeout_before"):
+            raise GspUncertain("timeout")
+        for rec in FakeGsp.ewb_registry.values():
+            if str(rec["ewb_no"]) == str(payload["ewbNo"]):
+                rec["ewb_valid"] = "2026-11-12 23:59:00"
+        if self.behaviour.get("timeout_after"):
+            raise GspUncertain("timeout (answer lost)")
+        return {"ewb_valid": "2026-11-12 23:59:00", "updated": "2026-11-09 12:00:00"}
 
     def update_transporter(self, payload):
         self.calls.append("update_transporter")

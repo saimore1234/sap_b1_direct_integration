@@ -179,6 +179,16 @@ class IndiaComplianceAdapter(Gsp):
             _classify(e)
         return {"ewb_valid": res.get("validUpto"), "updated": res.get("vehUpdDate")}
 
+    def extend_validity(self, payload):
+        try:
+            res = self._ewb().extend_validity(payload)
+        except Exception as e:
+            _classify(e)
+        code = getattr(res, "error_code", None)
+        if code and not res.get("validUpto"):
+            raise GspRejected(_plain(getattr(res, "error_message", "") or str(code)), code=str(code))
+        return {"ewb_valid": res.get("validUpto"), "updated": res.get("updatedDate")}
+
     def update_transporter(self, payload):
         try:
             res = self._ewb().update_transporter(payload)

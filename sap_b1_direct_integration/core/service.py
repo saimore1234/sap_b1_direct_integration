@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, List, Optional
 from . import constants as C
 from . import nic_payload as N
 from . import validation as V
-from .contract import ContractError, Invoice, Transport, dec, parse_invoice, text
+from .contract import ContractError, Invoice, Transport, dec, parse_invoice, text, parse_date
 
 
 # ------------------------------------------------------------------------------------------------ errors / DTOs
@@ -98,6 +98,7 @@ class Gsp:
     def cancel_ewb(self, payload: Dict[str, Any]) -> Dict[str, Any]: ...
     def update_vehicle(self, payload: Dict[str, Any]) -> Dict[str, Any]: ...
     def update_transporter(self, payload: Dict[str, Any]) -> Dict[str, Any]: ...
+    def extend_validity(self, payload: Dict[str, Any]) -> Dict[str, Any]: ...
 
 
 # ------------------------------------------------------------------------------------------------ helpers
@@ -154,7 +155,7 @@ class GstApi:
             raise AccessDenied("This API user is not allowed to use the integration profile.")
         flag = {C.OP_EINVOICE: profile.allow_einvoice, C.OP_EINVOICE_CANCEL: profile.allow_einvoice and profile.allow_cancel,
                 C.OP_EWAYBILL: profile.allow_ewaybill, C.OP_EWAYBILL_CANCEL: profile.allow_ewaybill and profile.allow_cancel,
-                C.OP_VEHICLE: profile.allow_ewaybill and profile.allow_updates, C.OP_TRANSPORTER: profile.allow_ewaybill and profile.allow_updates}.get(operation, True)
+                C.OP_VEHICLE: profile.allow_ewaybill and profile.allow_updates, C.OP_EXTEND: profile.allow_ewaybill and profile.allow_updates, C.OP_TRANSPORTER: profile.allow_ewaybill and profile.allow_updates}.get(operation, True)
         if not flag:
             raise AccessDenied(f"The operation {operation} is not permitted for this integration profile.")
         db = text(req.get("sap_database") or (invoice.sap_database if invoice else ""))
@@ -487,12 +488,15 @@ class GstApi:
             self.store.update(ref, processing_status=C.ST_FAILED, error_code="NO_EWB", error_message="The response did not contain an e-Way Bill number.", locked_until=None)
             return self._env(rid, False, C.ST_FAILED, ref, message="The response did not contain an e-Way Bill number.", warnings=subs)
         self.store.update(ref, processing_status=C.ST_GENERATED, ewaybill_number=str(no), ewaybill_date=_parse_dt(res.get("ewb_date")), ewaybill_validity=_parse_dt(res.get("ewb_valid")), locked_until=None, error_code="", error_message="")
-        return self._env(rid, True, C.ST_GENERATED, ref, data={"ewb_no": str(no), "ewb_date": _fmt_dt(_parse_dt(res.get("ewb_date"))) or res.get("ewb_date"), "ewb_valid_till": _fmt_dt(_parse_dt(res.get("ewb_valid"))) or res.get("ewb_valid")}, message="e-Way Bill generated.", warnings=subs)
+        pending = not res.get("ewb_valid")
+        return self._env(rid, True, C.ST_GENERATED, ref, data={"ewb_no": str(no), "ewb_date": _fmt_dt(_parse_dt(res.get("ewb_date"))) or res.get("ewb_date"), "ewb_valid_till": _fmt_dt(_parse_dt(res.get("ewb_valid"))) or res.get("ewb_valid"), "part_b_pending": pending},
+                         message="Part-A only: Part-B (vehicle / transport document) is still pending. Goods must not move yet." if pending else "e-Way Bill generated.", warnings=subs)
 
     @staticmethod
     def _ewb_data(rec: Dict[str, Any]) -> Dict[str, Any]:
         f = lambda v: v.strftime("%Y-%m-%d %H:%M:%S") if isinstance(v, datetime) else v
-        return {"ewb_no": rec.get("ewaybill_number"), "ewb_date": f(rec.get("ewaybill_date")), "ewb_valid_till": f(rec.get("ewaybill_validity"))}
+        return {"ewb_no": rec.get("ewaybill_number"), "ewb_date": f(rec.get("ewaybill_date")), "ewb_valid_till": f(rec.get("ewaybill_validity")),
+                "part_b_pending": bool(rec.get("ewaybill_number")) and not rec.get("ewaybill_validity")}
 
     def _reconcile_ewb(self, rec: Dict[str, Any], ref: str, rid: str, profile: Profile, inv: Invoice) -> Dict[str, Any]:
         """Look the e-Way Bill up (by document number/date at the portal) before anything else; only 'not found' makes a new attempt possible."""
@@ -528,6 +532,7 @@ class GstApi:
                 if det.get("ewb_valid"):
                     self.store.update(ref, ewaybill_validity=_parse_dt(det["ewb_valid"]))
                     data["ewb_valid_till"] = det["ewb_valid"]
+                data["part_b_pending"] = not det.get("ewb_valid")      # the portal itself is the authority
                 return self._env(rid, True, C.ST_GENERATED, ref, data=data)
             except (GspUncertain, GspRejected) as e:
                 return self._env(rid, True, C.ST_GENERATED, ref, data=self._ewb_data(rec), warnings=[f"Portal details could not be refreshed now ({e}); stored values returned."])
@@ -593,12 +598,19 @@ class GstApi:
         rec = self.store.get(src)
         veh = text(req.get("vehicle_number")).replace(" ", "").upper()
         reason, remark, place, state = text(req.get("reason")), text(req.get("remark"), 50), text(req.get("place"), 50), text(req.get("state_code"))
-        tr = Transport(vehicle_number=veh, transport_mode=text(req.get("transport_mode") or "Road"), vehicle_type=text(req.get("vehicle_type") or "Regular"),
-                       doc_number=text(req.get("doc_number")), doc_date=None)
         f = V.Findings()
+        mode = text(req.get("transport_mode") or "Road")
+        doc_date = self._doc_date(req, f)
+        tr = Transport(vehicle_number=veh, transport_mode=mode, vehicle_type=text(req.get("vehicle_type") or "Regular"), doc_number=text(req.get("doc_number")), doc_date=doc_date)
+        if mode not in C.TRANSPORT_MODES:
+            f.error("MODE", "transport_mode", "Transport mode must be Road, Rail, Air or Ship")
+        elif mode != "Road" and (not tr.doc_number or not tr.doc_date):
+            f.error("TRANSPORT_DOC", "doc_number", f"{mode} transport requires the transport document number and date")
+        if tr.vehicle_type not in C.VEHICLE_TYPES:
+            f.error("VEHICLE_TYPE", "vehicle_type", "Vehicle type must be Regular or Over Dimensional Cargo (ODC)")
         if not rec or rec.get("processing_status") != C.ST_GENERATED:
             f.error("NO_EWB", "ewaybill", "There is no active e-Way Bill for this document")
-        if not V.VEHICLE_RX.match(veh):
+        if (mode == "Road" or veh) and not V.VEHICLE_RX.match(veh):
             f.error("VEHICLE", "vehicle_number", f"Vehicle number '{veh}' is not a valid format")
         if reason not in C.VEHICLE_UPDATE_REASONS:
             f.error("REASON", "reason", f"Reason must be one of {sorted(C.VEHICLE_UPDATE_REASONS)}")
@@ -614,7 +626,13 @@ class GstApi:
         ref = make_reference(ident["integration_id"], ident["sap_database"], ident["object_type"], ident["doc_entry"], C.OP_VEHICLE, N.request_hash(payload)[:10])
         prev = self.store.get(ref)
         if prev and prev.get("processing_status") == C.ST_GENERATED:
-            return self._env(rid, True, C.ST_GENERATED, ref, data=self._ewb_data(rec), message="This identical vehicle update was already applied.")
+            # going back to an earlier vehicle (A -> B -> A) is a real change: skip only when the portal still shows this vehicle
+            try:
+                shown = (self.gsp_factory(profile.seller_gstin).get_ewb(rec["ewaybill_number"]).get("vehicle_no") or "").replace(" ", "").upper()
+            except (GspUncertain, GspRejected):
+                shown = veh
+            if shown == veh:
+                return self._env(rid, True, C.ST_GENERATED, ref, data=self._ewb_data(rec), message="This identical vehicle update was already applied.")
         fields = {"transaction_reference": ref, "integration_id": ident["integration_id"], "sap_database": ident["sap_database"], "sap_object_type": ident["object_type"], "sap_doc_entry": ident["doc_entry"],
                   "operation_type": C.OP_VEHICLE, "request_hash": N.request_hash(payload), "request_id": rid, "processing_status": C.ST_PROCESSING, "locked_until": self.now() + timedelta(seconds=self.LOCK_SECONDS), "ewaybill_number": rec["ewaybill_number"]}
         if prev is None:
@@ -622,6 +640,8 @@ class GstApi:
                 return self._env(rid, False, C.ST_PROCESSING, ref, message="This update is already in progress.")
         elif prev.get("processing_status") == C.ST_PROCESSING and prev.get("locked_until") and prev["locked_until"] > self.now():
             return self._env(rid, False, C.ST_PROCESSING, ref, message="This update is already in progress.")
+        if prev is not None:
+            self.store.update(ref, processing_status=C.ST_PROCESSING, request_id=rid, locked_until=self.now() + timedelta(seconds=self.LOCK_SECONDS))
         gsp = self.gsp_factory(profile.seller_gstin)
         try:
             res = gsp.update_vehicle(payload)
@@ -640,8 +660,105 @@ class GstApi:
             return self._env(rid, False, C.ST_FAILED, ref, message=str(e))
         self.store.update(ref, processing_status=C.ST_GENERATED, locked_until=None)
         if res.get("ewb_valid"):
-            self.store.update(src, ewaybill_validity=_parse_dt(res["ewb_valid"]))
+            self.store.update(src, ewaybill_validity=_parse_dt(res["ewb_valid"]))      # Part-B completed: validity starts now
         return self._env(rid, True, C.ST_GENERATED, ref, data={"vehicle_no": veh, "ewb_valid_till": res.get("ewb_valid"), "updated": res.get("updated")}, message="Vehicle updated (confirmed by the portal).")
+
+    @staticmethod
+    def _doc_date(req: Dict[str, Any], f) -> Optional[date]:
+        if not req.get("doc_date"):
+            return None
+        try:
+            return parse_date(req["doc_date"], "doc_date")
+        except ContractError:
+            f.error("TRANSPORT_DOC_DATE", "doc_date", "Transport document date is not a valid date (YYYY-MM-DD)")
+            return None
+
+    def extend_e_waybill_validity(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        rid = self._rid(req)
+        profile = self._authorise(req, C.OP_EXTEND)
+        ident = self._identity(req)
+        src = make_reference(ident["integration_id"], ident["sap_database"], ident["object_type"], ident["doc_entry"], C.OP_EWAYBILL)
+        rec = self.store.get(src)
+        f = V.Findings()
+        if not rec or rec.get("processing_status") != C.ST_GENERATED or not rec.get("ewaybill_number"):
+            f.error("NO_EWB", "ewaybill", "There is no active e-Way Bill for this document")
+            return self._env(rid, False, C.ST_VALIDATION_FAILED, findings=f, message="Extension not possible. Nothing was sent.")
+        gsp = self.gsp_factory(profile.seller_gstin)
+        try:                                                              # eligibility is checked against the portal, not the stored copy
+            det = gsp.get_ewb(rec["ewaybill_number"])
+        except (GspUncertain, GspRejected) as e:
+            return self._env(rid, False, C.ST_FAILED, src, message=f"The current e-Way Bill status could not be read ({e}). Nothing was sent.")
+        valid = _parse_dt(det.get("ewb_valid"))
+        if str(det.get("status")).upper() in ("CNL", "CANCELLED"):
+            f.error("CANCELLED", "ewaybill", "The e-Way Bill is cancelled")
+        elif not valid:
+            f.error("PART_B_PENDING", "ewaybill", "Part-B is not completed, so there is no validity to extend")
+        else:
+            window = timedelta(hours=C.EXTEND_WINDOW_HOURS)
+            if not valid - window <= self.now() <= valid + window:
+                f.error("EXTEND_WINDOW", "ewaybill", f"Validity can be extended only from {C.EXTEND_WINDOW_HOURS} hours before to {C.EXTEND_WINDOW_HOURS} hours after expiry ({_fmt_dt(valid)})")
+
+        d = {k: text(req.get(k), n) for k, n in (("place", 50), ("state_code", 2), ("pincode", 6), ("remaining_distance", 4), ("reason", 40), ("remark", 50),
+                                                 ("consignment_status", 20), ("transit_type", 20), ("address1", 100), ("address2", 100), ("address3", 100))}
+        d["consignment_status"] = d["consignment_status"] or "In Movement"
+        veh = text(req.get("vehicle_number")).replace(" ", "").upper() or str(det.get("vehicle_no") or "").replace(" ", "").upper()
+        mode = text(req.get("transport_mode") or "Road")
+        tr = Transport(vehicle_number=veh, transport_mode=mode, doc_number=text(req.get("doc_number")), doc_date=self._doc_date(req, f))
+        if d["reason"] not in C.EXTEND_REASONS:
+            f.error("REASON", "reason", f"Reason must be one of {sorted(C.EXTEND_REASONS)}")
+        if len(d["place"]) < 3:
+            f.error("PLACE", "place", "Current place is required")
+        if d["state_code"] not in C.STATE_CODES:
+            f.error("STATE", "state_code", "A valid GST state code is required")
+        if not (d["pincode"].isdigit() and len(d["pincode"]) == 6):
+            f.error("PINCODE", "pincode", "The 6-digit PIN code of the current place is required")
+        if not (d["remaining_distance"].isdigit() and 0 < int(d["remaining_distance"]) <= 4000):
+            f.error("DISTANCE", "remaining_distance", "Remaining distance (1-4000 km) is required")
+        if mode not in C.TRANSPORT_MODES:
+            f.error("MODE", "transport_mode", "Transport mode must be Road, Rail, Air or Ship")
+        elif mode == "Road" and not V.VEHICLE_RX.match(veh):
+            f.error("VEHICLE", "vehicle_number", "A valid vehicle number is required")
+        elif mode != "Road" and (not tr.doc_number or not tr.doc_date):
+            f.error("TRANSPORT_DOC", "doc_number", f"{mode} transport requires the transport document number and date")
+        if d["consignment_status"] not in C.CONSIGNMENT_STATUS:
+            f.error("CONSIGNMENT", "consignment_status", "Consignment status must be In Movement or In Transit")
+        elif d["consignment_status"] == "In Transit" and (d["transit_type"] not in C.TRANSIT_TYPES or len(d["address1"]) < 3):
+            f.error("TRANSIT", "transit_type", "For In Transit give the transit type (Road, In Warehouse or Others) and the address")
+        if not f.ok:
+            return self._env(rid, False, C.ST_VALIDATION_FAILED, findings=f, message="Extension not possible. Nothing was sent.")
+
+        payload = N.build_extend_validity(rec["ewaybill_number"], tr, d)
+        # keyed on the validity being extended: the same expiry is never extended twice, a later one can be
+        ref = make_reference(ident["integration_id"], ident["sap_database"], ident["object_type"], ident["doc_entry"], C.OP_EXTEND, valid.strftime("%y%m%d%H%M"))
+        fields = {"transaction_reference": ref, "integration_id": ident["integration_id"], "sap_database": ident["sap_database"], "sap_object_type": ident["object_type"], "sap_doc_entry": ident["doc_entry"],
+                  "operation_type": C.OP_EXTEND, "request_hash": N.request_hash(payload), "request_id": rid, "processing_status": C.ST_PROCESSING, "locked_until": self.now() + timedelta(seconds=self.LOCK_SECONDS), "ewaybill_number": rec["ewaybill_number"]}
+        prev = self.store.get(ref)
+        if prev is None:
+            if not self.store.create(ref, fields):
+                return self._env(rid, False, C.ST_PROCESSING, ref, message="This extension is already in progress.")
+        elif prev.get("processing_status") == C.ST_PROCESSING and prev.get("locked_until") and prev["locked_until"] > self.now():
+            return self._env(rid, False, C.ST_PROCESSING, ref, message="This extension is already in progress.")
+        else:
+            self.store.update(ref, processing_status=C.ST_PROCESSING, request_id=rid, locked_until=self.now() + timedelta(seconds=self.LOCK_SECONDS))
+        try:
+            res = gsp.extend_validity(payload)
+        except GspUncertain:
+            try:                                                           # reconcile: a later validity at the portal means it was applied
+                new = _parse_dt(gsp.get_ewb(rec["ewaybill_number"]).get("ewb_valid"))
+            except (GspUncertain, GspRejected):
+                new = None
+            if not new or new <= valid:
+                self.store.update(ref, processing_status=C.ST_UNKNOWN, error_code="TIMEOUT", locked_until=None)
+                return self._env(rid, False, C.ST_UNKNOWN, ref, message="No confirmed answer. The extension outcome is unknown; use Refresh status.")
+            res = {"ewb_valid": _fmt_dt(new)}
+        except GspRejected as e:
+            self.store.update(ref, processing_status=C.ST_FAILED, error_code=e.code[:40], error_message=str(e)[:140], locked_until=None)
+            return self._env(rid, False, C.ST_FAILED, ref, message=str(e), data={"error_code": e.code})
+        new = _parse_dt(res.get("ewb_valid"))
+        self.store.update(ref, processing_status=C.ST_GENERATED, locked_until=None)
+        if new:
+            self.store.update(src, ewaybill_validity=new)
+        return self._env(rid, True, C.ST_GENERATED, ref, data={"ewb_valid_till": _fmt_dt(new) or res.get("ewb_valid"), "vehicle_no": veh}, message="Validity extended (confirmed by the portal).")
 
     def update_transporter(self, req: Dict[str, Any]) -> Dict[str, Any]:
         rid = self._rid(req)
