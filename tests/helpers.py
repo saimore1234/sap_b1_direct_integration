@@ -222,6 +222,15 @@ class FakeGsp(Gsp):
             raise GspUncertain("timeout (answer lost)")
         return {"ewb_valid": "2026-11-12 23:59:00", "updated": "2026-11-09 12:00:00"}
 
+    def lookup_gstin(self, gstin):
+        self.calls.append("lookup_gstin")
+        b = self.behaviour
+        if b.get("timeout_before"):
+            raise GspUncertain("timeout")
+        if b.get("lookup_error"):
+            raise GspRejected(b["lookup_error"])
+        return b.get("taxpayer", {"gstin": gstin, "sts": "Active"})
+
     def update_transporter(self, payload):
         self.calls.append("update_transporter")
         return {"updated": "2026-11-09 12:00:00"}

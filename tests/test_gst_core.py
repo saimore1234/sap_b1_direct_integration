@@ -568,6 +568,64 @@ class NoAccountingDocumentsTests(unittest.TestCase):
         self.assertNotIn("import frappe", src); self.assertNotIn("frappe.db", src)
 
 
+
+class GstinSearchTests(Base):
+    TAXPAYER = {
+        "gstin": BUYER_GSTIN, "sts": "Active", "lgnm": "BUYER PRIVATE LIMITED", "tradeNam": "Buyer", "dty": "Regular", "ctb": "Private Limited Company",
+        "rgdt": "01/07/2017", "cxdt": "",
+        "pradr": {"addr": {"bno": "12", "flno": "2nd Floor", "bnm": "Trade House", "st": "Market Street", "loc": "Indiranagar", "dst": "Bengaluru", "stcd": "Karnataka", "pncd": "560001"}},
+        "adadr": [{"addr": {"st": "Plant Road", "pncd": "560058"}}, {"addr": {}}],
+    }
+
+    def ask(self, gstin=BUYER_GSTIN, **extra):
+        return self.api.verify_gstin({"integration_id": "IT1", "sap_database": "DB_ONE", "gstin": gstin, **extra})
+
+    def test_active_taxpayer_with_addresses(self):
+        self.gsp.behaviour["taxpayer"] = self.TAXPAYER
+        r = self.ask(" " + BUYER_GSTIN.lower())
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["status"], "Active")
+        d = r["data"]
+        self.assertEqual((d["legal_name"], d["state_code"], d["taxpayer_type"]), ("BUYER PRIVATE LIMITED", "29", "Regular"))
+        self.assertEqual([a["type"] for a in d["addresses"]], ["principal", "additional"])          # the empty entry is dropped
+        self.assertEqual(d["addresses"][0]["street"], "Market Street")
+        self.assertEqual(d["addresses"][1]["city"], "")                                             # partial address: nothing invented
+        self.assertEqual(self.store.rows, {})                                                       # nothing is stored
+
+    def test_registration_statuses(self):
+        for raw, expected in (("Cancelled", "Cancelled"), ("Suspended", "Suspended"), ("Inactive", "Inactive"), ("Invalid", "Invalid"), ("Provisional", "Unknown"), ("", "Unknown")):
+            self.gsp.behaviour["taxpayer"] = {"gstin": BUYER_GSTIN, "sts": raw}
+            r = self.ask()
+            self.assertEqual((r["ok"], r["status"]), (True, expected), raw)
+            self.assertEqual(r["data"]["addresses"], [])
+
+    def test_bad_format_or_check_character_never_reaches_the_service(self):
+        wrong_check = BUYER_GSTIN[:14] + ("0" if BUYER_GSTIN[14] != "0" else "1")
+        for value in ("ABC", "", "URP", wrong_check):
+            r = self.ask(value)
+            self.assertEqual(r["status"], "Invalid", value)
+        self.assertEqual(self.calls, [])
+
+    def test_service_failure_is_not_reported_as_an_invalid_gstin(self):
+        for behaviour in ({"timeout_before": True}, {"lookup_error": "API Credits Exhausted"}, {"taxpayer": None}, {"taxpayer": {"gstin": SELLER_GSTIN, "sts": "Active"}}):
+            self.gsp.behaviour = behaviour
+            r = self.ask()
+            self.assertEqual((r["ok"], r["status"]), (False, "Verification Failed"), behaviour)
+
+    def test_only_the_profile_user_and_database_may_ask(self):
+        with self.assertRaises(AccessDenied):
+            self.api.verify_gstin({"integration_id": "IT1", "sap_database": "OTHER", "gstin": BUYER_GSTIN})
+        self.api = self.make_api(site=Site(user="somebody@else"))
+        with self.assertRaises(AccessDenied):
+            self.ask()
+        self.assertEqual(self.calls, [])
+
+    def test_log_holds_no_gstin_or_name(self):
+        self.gsp.behaviour["taxpayer"] = self.TAXPAYER
+        self.ask()
+        self.assertNotIn(BUYER_GSTIN, str(self.logs))
+        self.assertNotIn("BUYER PRIVATE", str(self.logs))
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -733,3 +791,10 @@ class UrpTests(Base):
         inv = self._urp()
         r = self.api.validate_invoice(req(inv))
         self.assertFalse(r["ok"]); self.assertEqual(self.calls, [])
+
+    def test_part_a_through_the_irn_sends_no_transport_mode(self):
+        inv = make_invoice(); inv["transport"] = {"vehicle_number": "", "transporter_id": TRANSPORTER_GSTIN, "transport_mode": "Road", "distance": 100}
+        p = N.build_ewb_with_irn("I" * 64, parse_invoice(inv).transport)
+        self.assertNotIn("TransMode", p); self.assertNotIn("VehType", p); self.assertEqual(p["TransId"], TRANSPORTER_GSTIN)
+        inv["transport"]["vehicle_number"] = "MH04AB1234"
+        self.assertEqual(N.build_ewb_with_irn("I" * 64, parse_invoice(inv).transport)["TransMode"], "1")

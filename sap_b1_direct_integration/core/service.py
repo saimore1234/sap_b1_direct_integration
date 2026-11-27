@@ -99,6 +99,35 @@ class Gsp:
     def update_vehicle(self, payload: Dict[str, Any]) -> Dict[str, Any]: ...
     def update_transporter(self, payload: Dict[str, Any]) -> Dict[str, Any]: ...
     def extend_validity(self, payload: Dict[str, Any]) -> Dict[str, Any]: ...
+    def lookup_gstin(self, gstin: str) -> Dict[str, Any]: ...
+
+
+# ------------------------------------------------------------------------------------------------ GSTIN search
+GSTIN_STATUSES = {"active": "Active", "inactive": "Inactive", "cancelled": "Cancelled", "suspended": "Suspended", "invalid": "Invalid"}
+_ADDRESS_KEYS = (("building_number", "bno"), ("floor", "flno"), ("building_name", "bnm"), ("street", "st"), ("locality", "loc"),
+                 ("city", "city"), ("district", "dst"), ("state_name", "stcd"), ("pincode", "pncd"), ("landmark", "landMark"))
+
+
+def _gstin_address(entry: Any, kind: str) -> Optional[Dict[str, str]]:
+    raw = (entry or {}).get("addr") or {}
+    out = {name: text(raw.get(key)) for name, key in _ADDRESS_KEYS}
+    out["landmark"] = out["landmark"] or text(raw.get("locality"))
+    if not any(out.values()):
+        return None
+    out["type"] = kind
+    return out
+
+
+def gstin_details(gstin: str, res: Dict[str, Any]) -> Dict[str, Any]:
+    """The public registration data of one GSTIN, from the GST search response. Nothing is guessed: a missing value stays empty."""
+    raw_status = text(res.get("sts"))
+    addresses = [_gstin_address(res.get("pradr"), "principal")] + [_gstin_address(a, "additional") for a in (res.get("adadr") or [])]
+    return {
+        "gstin": gstin, "status": GSTIN_STATUSES.get(raw_status.lower(), "Unknown"), "status_raw": raw_status,
+        "legal_name": text(res.get("lgnm")), "trade_name": text(res.get("tradeNam")), "taxpayer_type": text(res.get("dty")),
+        "constitution": text(res.get("ctb")), "registration_date": text(res.get("rgdt")), "cancellation_date": text(res.get("cxdt")),
+        "state_code": gstin[:2], "addresses": [a for a in addresses if a],
+    }
 
 
 # ------------------------------------------------------------------------------------------------ helpers
@@ -188,6 +217,34 @@ class GstApi:
     def _rid(self, req: Dict[str, Any]) -> str:
         r = text(req.get("request_id"))
         return r if re.fullmatch(r"[A-Za-z0-9_.:-]{8,64}", r or "") else uuid.uuid4().hex
+
+    # ============================================================================================ GSTIN search (nothing is stored)
+    def verify_gstin(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        ok=True means the question was answered (status Active / Inactive / Cancelled / Suspended / Invalid / Unknown).
+        ok=False with "Verification Failed" means the GST service could not be asked: it says nothing about the GSTIN.
+        """
+        rid = self._rid(req)
+        profile = self._authorise(req, C.OP_GSTIN)
+        gstin = text(req.get("gstin")).upper()
+        # loose format on purpose: UIN / TDS / non-resident numbers differ from the ordinary taxpayer pattern
+        if not (V.GSTIN_LOOSE_RX.match(gstin) and V.gstin_checksum_ok(gstin)):
+            return self._env(rid, True, "Invalid", data={"gstin": gstin, "status": "Invalid", "addresses": []},
+                             message="The GSTIN has a wrong format or check character. The GST service was not called.")
+        try:
+            res = self.gsp_factory(profile.seller_gstin).lookup_gstin(gstin)
+            if res is None or (text(res.get("gstin")) and text(res.get("gstin")).upper() != gstin):
+                raise GspRejected("The GST service returned no result for this GSTIN.")
+        except GspUncertain:
+            self.log("gstin_check_failed", request_id=rid, reason="timeout")
+            return self._env(rid, False, "Verification Failed", message="Unable to verify: the GST service did not answer. Try again later.")
+        except GspRejected as e:
+            self.log("gstin_check_failed", request_id=rid, reason="service")
+            return self._env(rid, False, "Verification Failed", message=("Unable to verify: " + str(e))[:300])
+        data = gstin_details(gstin, res)
+        self.log("gstin_checked", request_id=rid, result=data["status"])
+        message = {"Invalid": "The GST service reports that this GSTIN does not exist.", "Unknown": "The GST service returned no registration status."}.get(data["status"], "GSTIN registration is " + data["status"] + ".")
+        return self._env(rid, True, data["status"], data=data, message=message)
 
     # ============================================================================================ validation (no persistence)
     def _parse_and_validate(self, req: Dict[str, Any], profile_for_flags: Optional[Profile], sandbox: bool, for_einvoice: bool = True):

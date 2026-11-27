@@ -121,6 +121,15 @@ class IndiaComplianceAdapter(Gsp):
         return {"irn": res.get("Irn"), "ack_no": res.get("AckNo"), "ack_date": res.get("AckDt"), "signed_invoice": res.get("SignedInvoice"), "signed_qr": res.get("SignedQRCode"),
                 "status": res.get("Status"), "ewb_no": res.get("EwbNo"), "ewb_date": res.get("EwbDt"), "ewb_valid": res.get("EwbValidTill")}
 
+    # ----------------------------------------------------------------------------------------- GSTIN search
+    def lookup_gstin(self, gstin):
+        """Public taxpayer search of the installed GST app (no GSTIN credentials; needs its API key; not available in sandbox mode)."""
+        try:
+            from india_compliance.gst_india.api_classes.public import PublicAPI
+            return PublicAPI().get_gstin_info(gstin)
+        except Exception as e:
+            _classify(e)
+
     # ----------------------------------------------------------------------------------------- e-Way Bill
     def generate_ewb(self, payload, with_irn):
         try:

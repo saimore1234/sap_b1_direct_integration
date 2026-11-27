@@ -48,6 +48,7 @@ OP_EWAYBILL_CANCEL = "EWAYBILL_CANCEL"
 OP_VEHICLE = "VEHICLE"
 OP_TRANSPORTER = "TRANSPORTER"
 OP_EXTEND = "EXTEND"
+OP_GSTIN = "VERIFY_GSTIN"
 
 # validity extension (codes as used by the e-Way Bill API / india_compliance)
 EXTEND_REASONS = {"Natural Calamity": 1, "Law and Order Situation": 2, "Transshipment": 4, "Accident": 5, "Others": 99}

@@ -132,9 +132,11 @@ def _transport_values(tr: Transport) -> Dict[str, Any]:
 
 def build_ewb_with_irn(irn: str, tr: Transport) -> Dict[str, Any]:
     v = _transport_values(tr)
+    # Part-A only (road, transporter known, no vehicle yet): sending a transport mode makes the IRP demand the vehicle number (error 4011)
+    part_a = not tr.vehicle_number and tr.transport_mode in ("", "Road")
     return sanitize({
-        "Irn": irn, "Distance": v["distance"], "TransMode": str(v["mode"]), "TransId": tr.transporter_id, "TransName": tr.transporter_name,
-        "TransDocDt": fmt_date(tr.doc_date), "TransDocNo": tr.doc_number, "VehNo": tr.vehicle_number, "VehType": v["vehicle_type"],
+        "Irn": irn, "Distance": v["distance"], "TransMode": "" if part_a else str(v["mode"]), "TransId": tr.transporter_id, "TransName": tr.transporter_name,
+        "TransDocDt": fmt_date(tr.doc_date), "TransDocNo": tr.doc_number, "VehNo": tr.vehicle_number, "VehType": "" if part_a else v["vehicle_type"],
     })
 
 

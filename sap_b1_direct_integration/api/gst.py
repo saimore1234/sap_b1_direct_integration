@@ -4,7 +4,7 @@ Public REST API (Frappe token authentication: Authorization: token API_KEY:API_S
     POST /api/method/sap_b1_direct_integration.api.gst.<endpoint>
 
 validate_invoice, generate_e_invoice, get_e_invoice_status, cancel_e_invoice, generate_e_waybill, get_e_waybill_status,
-cancel_e_waybill, update_vehicle, update_transporter, extend_e_waybill_validity   (+ ping for the connection test)
+cancel_e_waybill, update_vehicle, update_transporter, extend_e_waybill_validity, verify_gstin   (+ ping for the connection test)
 
 All endpoints return {"ok", "status", "request_id", "reference", "message", "data", "errors", "warnings"} inside Frappe's {"message": ...} envelope.
 Business outcomes (validation failed, failed, unknown, ...) are normal 200 responses with ok=false; HTTP errors are only used for
@@ -124,6 +124,12 @@ def update_transporter():
 @rate_limit(key="integration_id", limit=60, seconds=60, ip_based=False)
 def extend_e_waybill_validity():
     return _run("extend_e_waybill_validity")
+
+
+@frappe.whitelist(methods=["POST"])
+@rate_limit(key="integration_id", limit=60, seconds=60, ip_based=False)
+def verify_gstin():
+    return _run("verify_gstin")
 
 
 @frappe.whitelist(methods=["GET", "POST"])
