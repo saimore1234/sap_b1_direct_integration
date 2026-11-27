@@ -114,8 +114,8 @@ def validate_invoice(inv: Invoice, *, sandbox: bool, today: Optional[date] = Non
 
     # ---- parties
     export = inv.supply_type in C.EXPORT_SUPPLY_TYPES
-    if for_einvoice and inv.supply_type == "B2B" and not inv.buyer.gstin:
-        f.error("B2C_NOT_APPLICABLE", "buyer.gstin", "The buyer has no GSTIN: e-Invoice is not applicable to B2C supplies")
+    if for_einvoice and inv.supply_type == "B2B" and inv.buyer.gstin in ("", "URP"):
+        f.error("B2C_NOT_APPLICABLE", "buyer.gstin", "The buyer is unregistered (no GSTIN / URP): e-Invoice is not applicable to B2C supplies")
     _gstin(f, "Seller", inv.seller.gstin, sandbox)
     if not export:
         _gstin(f, "Buyer", inv.buyer.gstin, sandbox, allow_urp=not for_einvoice)
@@ -144,7 +144,15 @@ def validate_invoice(inv: Invoice, *, sandbox: bool, today: Optional[date] = Non
             inter_state = True if inter_state is None else inter_state and True
         if it.cgst_rate or it.sgst_rate:
             inter_state = False if inter_state is None else inter_state and False
-    if inter_state is True and not export and inv.seller.state_code and inv.buyer.state_code and inv.seller.state_code == (inv.place_of_supply or inv.buyer.state_code):
+    sez = inv.supply_type in C.SEZ_SUPPLY_TYPES
+    if for_einvoice:
+        if sez and any(i.cgst_amount or i.sgst_amount for i in inv.items):
+            f.error("SEZ_TAX", "items", "A supply to an SEZ is inter-state: only IGST applies, not CGST/SGST")
+        if inv.supply_type in ("EXPWOP", "SEZWOP") and any(i.igst_amount or i.cgst_amount or i.sgst_amount for i in inv.items):
+            f.error("TAX_WITHOUT_PAYMENT", "supply_type", f"Supply type {inv.supply_type} is without payment of tax, but the invoice charges GST")
+        if inv.supply_type == "B2B" and inv.items and all(not i.gst_rate for i in inv.items):
+            f.warn("NO_TAXABLE_ITEM", "items", "No line carries GST. A bill of supply (only exempt, nil-rated or non-GST goods) does not need an e-Invoice")
+    if inter_state is True and not export and not (sez and for_einvoice) and inv.seller.state_code and inv.buyer.state_code and inv.seller.state_code == (inv.place_of_supply or inv.buyer.state_code):
         f.error("IGST_SAME_STATE", "items", "IGST is charged although the seller state equals the place of supply. For an intra-state supply only CGST and SGST apply; the IRP rejects this invoice. Correct the tax code or the place of supply in SAP.")
     if inter_state is False and not export and inv.seller.state_code and (inv.place_of_supply or inv.buyer.state_code) != inv.seller.state_code:
         f.error("CGST_OTHER_STATE", "items", "CGST/SGST is charged although the place of supply (" + str(inv.place_of_supply or inv.buyer.state_code) + ") is in another state than the seller (" + str(inv.seller.state_code) + "). For an inter-state supply only IGST applies; the IRP rejects this invoice (error 2174). Correct the tax code or the place of supply in SAP.")

@@ -656,3 +656,80 @@ class PartAAndExtensionTests(Base):
         self.gsp.behaviour.clear(); self.gsp.behaviour["timeout_after"] = True
         r = self._extend()
         self.assertTrue(r["ok"], r)
+
+# ===================================================================================== e-Invoice scenarios
+class ScenarioTests(Base):
+    def _codes(self, inv, for_einvoice=True):
+        f = V.validate_invoice(parse_invoice(inv), sandbox=False, for_einvoice=for_einvoice)
+        return {i["code"] for i in f.errors}, {i["code"] for i in f.warnings}
+
+    def test_sez_in_the_same_state_charges_igst(self):
+        inv = make_invoice(); inv["supply_type"] = "SEZWP"
+        inv["buyer"] = dict(inv["buyer"], gstin=with_checksum("27AAACB5678K1Z"), state_code="27"); inv["place_of_supply"] = "27"
+        self.assertNotIn("IGST_SAME_STATE", self._codes(inv)[0])
+        inv["supply_type"] = "B2B"
+        self.assertIn("IGST_SAME_STATE", self._codes(inv)[0])
+
+    def test_without_payment_supplies_may_not_charge_tax(self):
+        for kind in ("SEZWOP", "EXPWOP"):
+            inv = make_invoice(); inv["supply_type"] = kind
+            self.assertIn("TAX_WITHOUT_PAYMENT", self._codes(inv)[0], kind)
+            self.assertNotIn("TAX_WITHOUT_PAYMENT", self._codes(inv, for_einvoice=False)[0], kind)
+
+    def test_sez_may_not_charge_cgst_sgst(self):
+        inv = make_invoice(igst=False); inv["supply_type"] = "SEZWP"
+        self.assertIn("SEZ_TAX", self._codes(inv)[0])
+
+    def test_standard_invoices_have_no_new_findings(self):
+        for igst in (True, False):
+            errors, warnings = self._codes(make_invoice(igst=igst))
+            self.assertEqual(errors, set(), igst); self.assertNotIn("NO_TAXABLE_ITEM", warnings)
+
+# ===================================================================================== unregistered recipients (URP)
+class UrpTests(Base):
+    def _urp(self, gstin="URP", **over):
+        inv = make_invoice(**over); inv["buyer"] = dict(inv["buyer"], gstin=gstin)
+        return inv
+
+    def _codes(self, inv):
+        return {i["code"] for i in V.validate_invoice(parse_invoice(inv), sandbox=False).errors}
+
+    def test_domestic_urp_is_never_sent_to_the_irp(self):
+        for gstin in ("URP", ""):
+            r = self.api.generate_e_invoice(req(self._urp(gstin)))
+            self.assertFalse(r["ok"]); self.assertIn("B2C_NOT_APPLICABLE", [e["code"] for e in r["errors"]])
+        self.assertEqual(self.calls, [])
+
+    def test_sez_and_deemed_export_need_a_gstin(self):
+        for kind in ("SEZWP", "DEXP"):
+            inv = self._urp(); inv["supply_type"] = kind
+            self.assertTrue({"GSTIN_FORMAT", "GSTIN_MISSING"} & self._codes(inv), kind)
+
+    def _export(self):
+        inv = self._urp(); inv["supply_type"] = "EXPWP"; inv["place_of_supply"] = "96"
+        inv["buyer"] = dict(inv["buyer"], state_code="96", pincode="")
+        inv["export"] = {"country_code": "AE", "foreign_currency": "USD", "port_code": "INNSA1"}
+        return inv
+
+    def test_urp_export_is_accepted_and_sent_to_the_mocked_gsp(self):
+        self.assertEqual(self._codes(self._export()), set())
+        r = self.api.generate_e_invoice(req(self._export()))
+        self.assertTrue(r["ok"], r); self.assertIn("generate_irn", self.calls)
+
+    def test_urp_with_bad_address_or_place_of_supply_is_reported(self):
+        inv = self._export(); inv["buyer"] = dict(inv["buyer"], address="", state_code="27")
+        self.assertTrue({"ADDRESS_MISSING", "EXPORT_STATE"} <= self._codes(inv))
+        inv = self._export(); inv["place_of_supply"] = "55"
+        self.assertIn("POS", self._codes(inv))
+
+    def test_eway_bill_for_an_unregistered_consignee_validates_and_generates(self):
+        inv = self._urp(); inv["purpose"] = "EWAYBILL"
+        r = self.api.validate_invoice(req(inv))
+        self.assertTrue(r["ok"], r)
+        g = self.api.generate_e_waybill(req(inv))
+        self.assertTrue(g["ok"], g); self.assertIn("generate_ewb", self.calls)
+
+    def test_validating_an_einvoice_of_an_unregistered_buyer_still_fails(self):
+        inv = self._urp()
+        r = self.api.validate_invoice(req(inv))
+        self.assertFalse(r["ok"]); self.assertEqual(self.calls, [])

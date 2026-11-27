@@ -205,7 +205,8 @@ class GstApi:
         inv.integration_id = inv.integration_id or text(req.get("integration_id"))
         profile = self._authorise({**req, "integration_id": inv.integration_id, "sap_database": inv.sap_database}, "VALIDATE", inv)
         sandbox = profile.environment.lower() == "sandbox"
-        f = V.validate_invoice(inv, sandbox=sandbox, min_hsn_digits=profile.min_hsn_digits, tolerance=profile.rounding_tolerance)
+        # the add-on marks an E-Way Bill validation, which has its own recipient rules (an unregistered consignee is allowed)
+        f = V.validate_invoice(inv, sandbox=sandbox, min_hsn_digits=profile.min_hsn_digits, tolerance=profile.rounding_tolerance, for_einvoice=text(body.get("purpose")) != "EWAYBILL")
         subs = N.apply_sandbox_identities(inv) if sandbox else []      # reported, after validation: sandbox values never mask problems in the real data
         if not inv.transport.vehicle_number and not inv.transport.transporter_id and inv.transport.distance == 0:
             pass  # transport is optional for e-Invoice
